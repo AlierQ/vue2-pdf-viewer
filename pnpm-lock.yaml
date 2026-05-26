@@ -12,7 +12,7 @@ importers:
         specifier: ^2.7.570
         version: 2.7.570(worker-loader@3.0.8(webpack@5.107.2))
       vue:
-        specifier: ^2.6.14
+        specifier: ^2.6.0
         version: 2.7.16
     devDependencies:
       clean-webpack-plugin:

@@ -1,12 +1,13 @@
 {
   "name": "vue2-pdf-viewer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Vue 2 PDF viewer component with annotation support, built on pdfjs-dist",
   "main": "dist/vue2-pdf-viewer.common.js",
   "module": "src/index.js",
   "files": [
     "dist/",
-    "src/"
+    "src/index.js",
+    "src/components/VuePdfViewer.vue"
   ],
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -29,7 +30,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/AlierQ/vue2-pdf-viewer.git"
-    
   },
   "dependencies": {
     "pdfjs-dist": "^2.7.570"
