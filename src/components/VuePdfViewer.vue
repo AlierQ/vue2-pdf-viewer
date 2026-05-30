@@ -31,6 +31,12 @@ export default {
     // 自定义批注图标，支持 SVG 字符串、require() 引入的路径、或 Module 对象
     annotationIcon: {
       default: ''
+    },
+    // 批注交互模式: 'click' 点击切换 / 'hover' 悬浮展示
+    annotationMode: {
+      type: String,
+      default: 'click',
+      validator: v => ['click', 'hover'].includes(v)
     }
   },
   data() {
@@ -120,11 +126,21 @@ export default {
 
       layer.innerHTML = '';
 
+      // 收集有内容的回复批注，按父批注 ID 分组
+      const replyMap = {}
+      annotations.forEach(a => {
+        if (a.subtype === 'Text' && a.inReplyTo && a.contents) {
+          if (!replyMap[a.inReplyTo]) replyMap[a.inReplyTo] = []
+          replyMap[a.inReplyTo].push(a)
+        }
+      })
+
       annotations.forEach(annotation => {
         if (!annotation.rect) return;
 
         const rect = this.convertPdfRectToScreen(annotation.rect, viewport);
-        const element = this.createAnnotationElement(annotation, rect, viewport);
+        const replies = replyMap[annotation.id] || []
+        const element = this.createAnnotationElement(annotation, rect, viewport, replies);
         if (element) {
           layer.appendChild(element);
         }
@@ -154,7 +170,7 @@ export default {
     },
 
     // 创建批注对应的 DOM 元素
-    createAnnotationElement(annotation, rect, viewport) {
+    createAnnotationElement(annotation, rect, viewport, replies = []) {
       const div = document.createElement('div');
       div.className = 'annotation-item';
       div.style.position = 'absolute';
@@ -195,63 +211,103 @@ export default {
           break;
 
         case 'Text':
-        case 'FreeText':
-          // 只有包含文本内容的批注才渲染
-          if (!annotation.contents) return null;
+          // 注解：图标 + 点击展开标签。跳过回复批注和空内容
+          if (annotation.inReplyTo || !annotation.contents) return null
 
           div.className += ' annotation-text';
           div.style.cursor = 'pointer';
           div.style.pointerEvents = 'auto';
-          const icon = this.resolveAnnotationIcon();
-          if (icon) {
-            div.style.background = 'none';
-            div.style.display = 'flex';
-            div.style.alignItems = 'flex-start';
-            div.style.overflow = 'visible';
-            const wrapper = document.createElement('span');
-            wrapper.style.display = 'inline-block';
-            wrapper.style.width = '59px';
-            wrapper.style.height = '59px';
-            wrapper.style.flexShrink = '0';
-            wrapper.style.cursor = 'pointer';
-            wrapper.style.pointerEvents = 'auto';
+          {
+            const icon = this.resolveAnnotationIcon();
+            if (icon) {
+              div.style.background = 'none';
+              div.style.display = 'flex';
+              div.style.alignItems = 'flex-start';
+              div.style.overflow = 'visible';
+              const wrapper = document.createElement('span');
+              wrapper.style.display = 'inline-block';
+              wrapper.style.width = '59px';
+              wrapper.style.height = '59px';
+              wrapper.style.flexShrink = '0';
+              wrapper.style.cursor = 'pointer';
+              wrapper.style.pointerEvents = 'auto';
 
-            if (icon.startsWith('<')) {
-              wrapper.innerHTML = icon;
-              const svg = wrapper.querySelector('svg');
-              if (svg) {
-                svg.style.width = '100%';
-                svg.style.height = '100%';
-                svg.style.display = 'block';
+              if (icon.startsWith('<')) {
+                wrapper.innerHTML = icon;
+                const svg = wrapper.querySelector('svg');
+                if (svg) {
+                  svg.style.width = '100%';
+                  svg.style.height = '100%';
+                  svg.style.display = 'block';
+                }
+              } else {
+                const img = document.createElement('img');
+                img.src = icon;
+                img.style.width = '100%';
+                img.style.height = '100%';
+                img.style.display = 'block';
+                wrapper.appendChild(img);
               }
+              div.appendChild(wrapper);
             } else {
-              const img = document.createElement('img');
-              img.src = icon;
-              img.style.width = '100%';
-              img.style.height = '100%';
-              img.style.display = 'block';
-              wrapper.appendChild(img);
+              div.style.backgroundColor = 'rgba(255, 200, 0, 0.4)';
             }
-            div.appendChild(wrapper);
-          } else {
-            div.style.backgroundColor = 'rgba(255, 200, 0, 0.4)';
           }
 
-          // 创建标签（默认隐藏），点击图标切换显隐
-          const label = this.createAnnotationLabel(annotation, rect, viewport.width);
-          label.style.display = 'none';
-          div.appendChild(label);
-
-          div.addEventListener('click', (e) => {
-            e.stopPropagation();
-            label.style.display = label.style.display === 'none' ? '' : 'none';
-          });
-          // 点击标签本身关闭
-          label.addEventListener('click', (e) => {
-            e.stopPropagation();
+          // 创建标签（默认隐藏），交互模式由 annotationMode prop 控制
+          {
+            const label = this.createAnnotationLabel(annotation, rect, viewport.width, replies);
             label.style.display = 'none';
-          });
-          break;
+            div.appendChild(label);
+            this.bindAnnotationInteraction(div, label);
+          }
+          break
+
+        case 'FreeText':
+          // hasAppearance 为 true 时，PDF.js 已将文字渲染到 canvas，无需覆盖层
+          if (!annotation.contents || annotation.hasAppearance) return null
+
+          div.className += ' annotation-freetext';
+          div.style.pointerEvents = 'auto';
+          div.style.overflow = 'hidden';
+          div.style.padding = '2px 4px';
+          div.style.fontSize = '12px';
+          div.style.lineHeight = '1.3';
+          div.style.color = '#333';
+          div.style.whiteSpace = 'pre-wrap';
+          div.style.wordBreak = 'break-word';
+          div.textContent = annotation.contents
+
+          if (annotation.borderStyle && annotation.borderStyle.width > 0) {
+            div.style.border = '1px solid #999'
+            div.style.backgroundColor = '#fff'
+          }
+          break
+
+        case 'Square':
+        case 'Circle':
+          div.className += ' annotation-shape';
+          div.style.pointerEvents = 'auto';
+          // hasAppearance 为 true 时 canvas 已有色块，overlay 仅负责点击交互，不加背景色
+          if (!annotation.hasAppearance) {
+            if (annotation.color) {
+              const c = annotation.color
+              div.style.backgroundColor = `rgba(${c[0] || c['0']}, ${c[1] || c['1']}, ${c[2] || c['2']}, 0.3)`
+            } else {
+              div.style.backgroundColor = 'rgba(255, 255, 0, 0.25)'
+            }
+          }
+          if (annotation.subtype === 'Circle') {
+            div.style.borderRadius = '50%'
+          }
+          if (annotation.contents) {
+            div.style.cursor = 'pointer'
+            const label = this.createAnnotationLabel(annotation, rect, viewport.width, replies)
+            label.style.display = 'none'
+            div.appendChild(label)
+            this.bindAnnotationInteraction(div, label)
+          }
+          break
 
         default:
           // Popup, Stamp, Line, Square, Circle, Ink, Caret, Widget 等不展示
@@ -272,8 +328,28 @@ export default {
     },
 
     // 为批注添加可见文本标签
+    // 绑定批注交互：click 模式点击切换，hover 模式悬浮展示
+    bindAnnotationInteraction(triggerEl, labelEl) {
+      if (this.annotationMode === 'hover') {
+        triggerEl.addEventListener('mouseenter', () => { labelEl.style.display = '' })
+        triggerEl.addEventListener('mouseleave', () => { labelEl.style.display = 'none' })
+        labelEl.addEventListener('mouseenter', () => { labelEl.style.display = '' })
+        labelEl.addEventListener('mouseleave', () => { labelEl.style.display = 'none' })
+      } else {
+        triggerEl.addEventListener('click', (e) => {
+          e.stopPropagation()
+          labelEl.style.display = labelEl.style.display === 'none' ? '' : 'none'
+        })
+      }
+      // 点击标签本身始终关闭
+      labelEl.addEventListener('click', (e) => {
+        e.stopPropagation()
+        labelEl.style.display = 'none'
+      })
+    },
+
     // 创建批注文本卡片（返回 DOM 元素，由调用方决定显隐和挂载）
-    createAnnotationLabel(annotation, rect, pageWidth) {
+    createAnnotationLabel(annotation, rect, pageWidth, replies = []) {
       const author = annotation.title || '';
       const dateStr = this.formatAnnotationDate(annotation.date || annotation.modificationDate);
       const content = annotation.contents || '';
@@ -281,17 +357,30 @@ export default {
       const card = document.createElement('div');
       card.className = 'annotation-label';
       const cardApproxWidth = 380;
-      const isNearRightEdge = pageWidth && (rect.left + rect.width + cardApproxWidth > pageWidth);
+      const isWide = rect.width > 200;
+      const isNearRightEdge = !isWide && pageWidth && (rect.left + rect.width + cardApproxWidth > pageWidth);
 
+      // 定位策略：
+      // - 宽标注(>200px)：右下角，箭头在上方向下指
+      // - 窄标注靠近右边缘：左侧，箭头右边指向左
+      // - 窄标注默认：右侧，箭头左边指向右
+      let arrowSide = 'left'; // left | right | top
       card.style.position = 'absolute';
-      if (isNearRightEdge) {
-        // 标签放在批注标记的左侧
+      if (isWide) {
+        card.style.left = 'auto';
+        card.style.right = '0px';
+        card.style.top = (rect.height + 8) + 'px';
+        arrowSide = 'top';
+      } else if (isNearRightEdge) {
         card.style.right = (rect.width + 8) + 'px';
         card.style.left = 'auto';
+        card.style.top = '0px';
+        arrowSide = 'right';
       } else {
         card.style.left = (rect.width + 8) + 'px';
+        card.style.top = '0px';
+        arrowSide = 'left';
       }
-      card.style.top = '0px';
       card.style.width = 'fit-content';
       card.style.maxWidth = '770px';
       card.style.minWidth = '400px';
@@ -309,6 +398,7 @@ export default {
         const header = document.createElement('div');
         header.style.display = 'flex';
         header.style.alignItems = 'baseline';
+        header.style.justifyContent = 'space-between';
         header.style.flexWrap = 'wrap';
         header.style.gap = '4px 16px';
         header.style.padding = '22px 26px';
@@ -351,21 +441,81 @@ export default {
         card.appendChild(body);
       }
 
+      // 回复内容
+      if (replies.length > 0) {
+        replies.forEach(reply => {
+          const replySection = document.createElement('div')
+          replySection.style.borderTop = '1px solid #eee'
+          replySection.style.marginTop = '1px solid #eee'
+
+          // 回复头部：作者 + 日期
+          const replyHeader = document.createElement('div')
+          replyHeader.style.display = 'flex'
+          replyHeader.style.alignItems = 'baseline'
+          replyHeader.style.justifyContent = 'space-between'
+          replyHeader.style.gap = '8px'
+          replyHeader.style.padding = '20px 26px 10px 26px'
+          replyHeader.style.background = '#fafaf5'
+
+          const replyAuthor = document.createElement('span')
+          replyAuthor.style.fontWeight = '600'
+          replyAuthor.style.fontSize = '18px'
+          replyAuthor.style.color = '#8a6d3b'
+          replyAuthor.textContent = (reply.title || '未知') + ' 回复'
+          replyHeader.appendChild(replyAuthor)
+
+          const replyDate = this.formatAnnotationDate(reply.date || reply.modificationDate)
+          if (replyDate) {
+            const dateEl = document.createElement('span')
+            dateEl.style.color = '#999'
+            dateEl.style.fontSize = '16px'
+            dateEl.style.whiteSpace = 'nowrap'
+            dateEl.textContent = replyDate
+            replyHeader.appendChild(dateEl)
+          }
+          replySection.appendChild(replyHeader)
+
+          // 回复正文
+          const replyBody = document.createElement('div')
+          replyBody.style.padding = '10px 26px'
+          replyBody.style.fontSize = '21px'
+          replyBody.style.color = '#555'
+          replyBody.style.whiteSpace = 'pre-wrap'
+          replyBody.style.wordBreak = 'break-word'
+          replyBody.style.lineHeight = '1.7'
+          replyBody.style.background = '#fafaf5'
+          replyBody.textContent = reply.contents
+          replySection.appendChild(replyBody)
+
+          card.appendChild(replySection)
+        })
+      }
+
       // 小三角箭头，指向批注标记
       const arrow = document.createElement('div');
       arrow.style.position = 'absolute';
-      arrow.style.top = '10px';
       arrow.style.width = '0';
       arrow.style.height = '0';
-      arrow.style.borderTop = '6px solid transparent';
-      arrow.style.borderBottom = '6px solid transparent';
-      if (isNearRightEdge) {
+      if (arrowSide === 'top') {
+        // 箭头在上方，向下指向标注
+        arrow.style.top = '-6px';
+        arrow.style.right = '12px';
+        arrow.style.borderLeft = '6px solid transparent';
+        arrow.style.borderRight = '6px solid transparent';
+        arrow.style.borderBottom = '6px solid #f8f6e9';
+      } else if (arrowSide === 'right') {
         // 箭头在右侧，指向左边
+        arrow.style.top = '10px';
         arrow.style.right = '-6px';
+        arrow.style.borderTop = '6px solid transparent';
+        arrow.style.borderBottom = '6px solid transparent';
         arrow.style.borderLeft = '6px solid #f8f6e9';
       } else {
         // 箭头在左侧，指向右边
+        arrow.style.top = '10px';
         arrow.style.left = '-6px';
+        arrow.style.borderTop = '6px solid transparent';
+        arrow.style.borderBottom = '6px solid transparent';
         arrow.style.borderRight = '6px solid #f8f6e9';
       }
       card.appendChild(arrow);
@@ -467,7 +617,8 @@ canvas {
 }
 
 .annotation-layer .annotation-link,
-.annotation-layer .annotation-text {
+.annotation-layer .annotation-text,
+.annotation-layer .annotation-shape {
   pointer-events: auto;
 }
 </style>
