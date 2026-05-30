@@ -1,16 +1,12 @@
 <template>
   <div class="pdf-container">
-    <!-- 工具栏：翻页 + 页码 -->
     <div class="pdf-toolbar">
       <button @click="prevPage" :disabled="currentPage <= 1">上一页</button>
       <span>第 {{ currentPage }} / {{ totalPages }} 页</span>
       <button @click="nextPage" :disabled="currentPage >= totalPages">下一页</button>
     </div>
-
-    <!-- PDF 渲染区域（相对定位，用于叠加批注层） -->
     <div class="pdf-page-wrapper" ref="pageWrapper">
       <canvas ref="pdfCanvas"></canvas>
-      <!-- 批注层：与 canvas 完全重叠 -->
       <div class="annotation-layer" ref="annotationLayer"></div>
     </div>
   </div>
@@ -21,23 +17,43 @@ import * as pdfjsLib from 'pdfjs-dist/es5/build/pdf';
 import pdfWorker from 'pdfjs-dist/es5/build/pdf.worker.entry';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
+const CSS = {
+  // 批注标签卡片
+  LABEL: 'v2pv-label',
+  LABEL_HDR: 'v2pv-label-hdr',
+  LABEL_AUTHOR: 'v2pv-label-author',
+  LABEL_DATE: 'v2pv-label-date',
+  LABEL_BODY: 'v2pv-label-body',
+  // 回复
+  REPLY: 'v2pv-reply',
+  REPLY_HDR: 'v2pv-reply-hdr',
+  REPLY_AUTHOR: 'v2pv-reply-author',
+  REPLY_DATE: 'v2pv-reply-date',
+  REPLY_BODY: 'v2pv-reply-body',
+  // 箭头
+  ARROW: 'v2pv-arrow',
+  // FreeText
+  FREETEXT: 'v2pv-freetext',
+  FREETEXT_BOX: 'v2pv-freetext-box',
+  // 图标
+  ICON: 'v2pv-icon',
+  ICON_IMG: 'v2pv-icon-img',
+  // 批注项
+  ITEM: 'v2pv-item',
+  ITEM_LINK: 'v2pv-item-link',
+  ITEM_HIGHLIGHT: 'v2pv-item-highlight',
+  ITEM_UNDERLINE: 'v2pv-item-underline',
+  ITEM_STRIKEOUT: 'v2pv-item-strikeout',
+  ITEM_TEXT: 'v2pv-item-text',
+  ITEM_SHAPE: 'v2pv-item-shape',
+};
+
 export default {
   name: 'PdfViewer',
   props: {
-    pdfUrl: {
-      type: String,
-      required: true
-    },
-    // 自定义批注图标，支持 SVG 字符串、require() 引入的路径、或 Module 对象
-    annotationIcon: {
-      default: ''
-    },
-    // 批注交互模式: 'click' 点击切换 / 'hover' 悬浮展示
-    annotationMode: {
-      type: String,
-      default: 'click',
-      validator: v => ['click', 'hover'].includes(v)
-    }
+    pdfUrl: { type: String, required: true },
+    annotationIcon: { default: '' },
+    annotationMode: { type: String, default: 'click', validator: v => ['click', 'hover'].includes(v) }
   },
   data() {
     return {
@@ -50,14 +66,9 @@ export default {
     };
   },
   methods: {
-    // ---------- PDF 加载 ----------
     async loadPdf(url) {
       try {
-        const loadingTask = pdfjsLib.getDocument({
-          url: url,
-          cMapUrl: '/cmaps/',
-          cMapPacked: true
-        });
+        const loadingTask = pdfjsLib.getDocument({ url: url, cMapUrl: '/cmaps/', cMapPacked: true });
         this.pdfDoc = await loadingTask.promise;
         this.totalPages = this.pdfDoc.numPages;
         await this.renderPage(this.currentPage);
@@ -66,50 +77,33 @@ export default {
       }
     },
 
-    // ---------- 页面渲染（含批注）----------
     async renderPage(num) {
       if (!this.pdfDoc) return;
-
       this.pageRendering = true;
       const page = await this.pdfDoc.getPage(num);
       const dpr = window.devicePixelRatio || 1;
 
-      // 所有页面使用相同的 cssScale，保证大小一致
       const cssViewport = page.getViewport({ scale: this.scale });
       const deviceViewport = page.getViewport({ scale: this.scale * dpr });
 
       const canvas = this.$refs.pdfCanvas;
-      const context = canvas.getContext('2d');
-
-      // 绘制缓冲区 = 物理像素（高清）
+      const ctx = canvas.getContext('2d');
       canvas.width = Math.floor(deviceViewport.width);
       canvas.height = Math.floor(deviceViewport.height);
-
-      // CSS 显示尺寸 = 逻辑像素
       canvas.style.width = Math.floor(cssViewport.width) + 'px';
       canvas.style.height = Math.floor(cssViewport.height) + 'px';
 
-      // 批注层尺寸与 canvas CSS 尺寸一致
       const annLayer = this.$refs.annotationLayer;
       if (annLayer) {
         annLayer.style.width = canvas.style.width;
         annLayer.style.height = canvas.style.height;
-        // 动态元素需要 inline pointer-events（scoped CSS 无法覆盖）
         annLayer.style.pointerEvents = 'none';
       }
 
-      // 以物理像素 viewport 渲染
-      const renderTask = page.render({
-        canvasContext: context,
-        viewport: deviceViewport
-      });
-
+      const renderTask = page.render({ canvasContext: ctx, viewport: deviceViewport });
       const annotationsPromise = page.getAnnotations();
       await renderTask.promise;
-
-      const annotations = await annotationsPromise;
-      this.renderAnnotations(annotations, cssViewport, page);
-
+      this.renderAnnotations(await annotationsPromise, cssViewport);
       this.pageRendering = false;
 
       if (this.pageNumPending !== null) {
@@ -119,61 +113,45 @@ export default {
       }
     },
 
-    // ---------- 批注绘制 ----------
-    renderAnnotations(annotations, viewport, page) {
+    renderAnnotations(annotations, viewport) {
       const layer = this.$refs.annotationLayer;
       if (!layer) return;
-
       layer.innerHTML = '';
 
-      // 收集有内容的回复批注，按父批注 ID 分组
-      const replyMap = {}
+      const replyMap = {};
       annotations.forEach(a => {
         if (a.subtype === 'Text' && a.inReplyTo && a.contents) {
-          if (!replyMap[a.inReplyTo]) replyMap[a.inReplyTo] = []
-          replyMap[a.inReplyTo].push(a)
+          if (!replyMap[a.inReplyTo]) replyMap[a.inReplyTo] = [];
+          replyMap[a.inReplyTo].push(a);
         }
-      })
+      });
 
       annotations.forEach(annotation => {
         if (!annotation.rect) return;
-
         const rect = this.convertPdfRectToScreen(annotation.rect, viewport);
-        const replies = replyMap[annotation.id] || []
-        const element = this.createAnnotationElement(annotation, rect, viewport, replies);
-        if (element) {
-          layer.appendChild(element);
-        }
+        const element = this.createAnnotationElement(annotation, rect, viewport, replyMap[annotation.id] || []);
+        if (element) layer.appendChild(element);
       });
     },
 
-    // 坐标转换：PDF 矩形 -> 屏幕像素矩形
     convertPdfRectToScreen(pdfRect, viewport) {
       const [x1, y1, x2, y2] = pdfRect;
-      const transform = viewport.transform;
-
-      const xa = transform[0], xb = transform[1], xc = transform[2],
-        xd = transform[3], xe = transform[4], yf = transform[5];
-
-      const leftTopX = xa * x1 + xc * y2 + xe;
-      const leftTopY = xb * x1 + xd * y2 + yf;
-
-      const rightBottomX = xa * x2 + xc * y1 + xe;
-      const rightBottomY = xb * x2 + xd * y1 + yf;
-
+      const t = viewport.transform;
+      const ltX = t[0] * x1 + t[2] * y2 + t[4];
+      const ltY = t[1] * x1 + t[3] * y2 + t[5];
+      const rbX = t[0] * x2 + t[2] * y1 + t[4];
+      const rbY = t[1] * x2 + t[3] * y1 + t[5];
       return {
-        left: Math.min(leftTopX, rightBottomX),
-        top: Math.min(leftTopY, rightBottomY),
-        width: Math.abs(leftTopX - rightBottomX),
-        height: Math.abs(leftTopY - rightBottomY)
+        left: Math.min(ltX, rbX),
+        top: Math.min(ltY, rbY),
+        width: Math.abs(ltX - rbX),
+        height: Math.abs(ltY - rbY)
       };
     },
 
-    // 创建批注对应的 DOM 元素
-    createAnnotationElement(annotation, rect, viewport, replies = []) {
+    createAnnotationElement(annotation, rect, viewport, replies) {
       const div = document.createElement('div');
-      div.className = 'annotation-item';
-      div.style.position = 'absolute';
+      div.className = CSS.ITEM;
       div.style.left = rect.left + 'px';
       div.style.top = rect.top + 'px';
       div.style.width = rect.width + 'px';
@@ -181,42 +159,28 @@ export default {
 
       switch (annotation.subtype) {
         case 'Link':
-          div.className += ' annotation-link';
-          div.style.cursor = 'pointer';
-          div.style.backgroundColor = 'rgba(0, 0, 255, 0.1)';
-          div.title = annotation.url || annotation.dest || '链接';
+          div.className += ' ' + CSS.ITEM_LINK;
+          div.title = annotation.url || annotation.dest || '';
           div.addEventListener('click', () => {
-            if (annotation.url) {
-              window.open(annotation.url, '_blank');
-            } else if (annotation.dest) {
-              console.log('内部跳转目标:', annotation.dest);
-            }
+            if (annotation.url) window.open(annotation.url, '_blank');
           });
           break;
 
         case 'Highlight':
-          div.className += ' annotation-highlight';
-          div.style.backgroundColor = 'rgba(255, 255, 0, 0.4)';
+          div.className += ' ' + CSS.ITEM_HIGHLIGHT;
           break;
 
         case 'Underline':
-          div.className += ' annotation-underline';
-          div.style.borderBottom = '2px solid red';
+          div.className += ' ' + CSS.ITEM_UNDERLINE;
           break;
 
         case 'StrikeOut':
-          div.className += ' annotation-strikeout';
-          div.style.textDecoration = 'line-through';
-          div.style.textDecorationColor = 'red';
+          div.className += ' ' + CSS.ITEM_STRIKEOUT;
           break;
 
         case 'Text':
-          // 注解：图标 + 点击展开标签。跳过回复批注和空内容
-          if (annotation.inReplyTo || !annotation.contents) return null
-
-          div.className += ' annotation-text';
-          div.style.cursor = 'pointer';
-          div.style.pointerEvents = 'auto';
+          if (annotation.inReplyTo || !annotation.contents) return null;
+          div.className += ' ' + CSS.ITEM_TEXT;
           {
             const icon = this.resolveAnnotationIcon();
             if (icon) {
@@ -225,27 +189,15 @@ export default {
               div.style.alignItems = 'flex-start';
               div.style.overflow = 'visible';
               const wrapper = document.createElement('span');
-              wrapper.style.display = 'inline-block';
-              wrapper.style.width = '59px';
-              wrapper.style.height = '59px';
-              wrapper.style.flexShrink = '0';
-              wrapper.style.cursor = 'pointer';
-              wrapper.style.pointerEvents = 'auto';
-
+              wrapper.className = CSS.ICON;
               if (icon.startsWith('<')) {
                 wrapper.innerHTML = icon;
                 const svg = wrapper.querySelector('svg');
-                if (svg) {
-                  svg.style.width = '100%';
-                  svg.style.height = '100%';
-                  svg.style.display = 'block';
-                }
+                if (svg) svg.className = CSS.ICON_IMG;
               } else {
                 const img = document.createElement('img');
                 img.src = icon;
-                img.style.width = '100%';
-                img.style.height = '100%';
-                img.style.display = 'block';
+                img.className = CSS.ICON_IMG;
                 wrapper.appendChild(img);
               }
               div.appendChild(wrapper);
@@ -253,119 +205,82 @@ export default {
               div.style.backgroundColor = 'rgba(255, 200, 0, 0.4)';
             }
           }
-
-          // 创建标签（默认隐藏），交互模式由 annotationMode prop 控制
           {
             const label = this.createAnnotationLabel(annotation, rect, viewport.width, replies);
             label.style.display = 'none';
             div.appendChild(label);
             this.bindAnnotationInteraction(div, label);
           }
-          break
+          break;
 
         case 'FreeText':
-          // hasAppearance 为 true 时，PDF.js 已将文字渲染到 canvas，无需覆盖层
-          if (!annotation.contents || annotation.hasAppearance) return null
-
-          div.className += ' annotation-freetext';
-          div.style.pointerEvents = 'auto';
-          div.style.overflow = 'hidden';
-          div.style.padding = '2px 4px';
-          div.style.fontSize = '12px';
-          div.style.lineHeight = '1.3';
-          div.style.color = '#333';
-          div.style.whiteSpace = 'pre-wrap';
-          div.style.wordBreak = 'break-word';
-          div.textContent = annotation.contents
-
+          if (!annotation.contents || annotation.hasAppearance) return null;
+          div.className += ' ' + CSS.FREETEXT;
           if (annotation.borderStyle && annotation.borderStyle.width > 0) {
-            div.style.border = '1px solid #999'
-            div.style.backgroundColor = '#fff'
+            div.className += ' ' + CSS.FREETEXT_BOX;
           }
-          break
+          div.textContent = annotation.contents;
+          break;
 
         case 'Square':
         case 'Circle':
-          div.className += ' annotation-shape';
-          div.style.pointerEvents = 'auto';
-          // hasAppearance 为 true 时 canvas 已有色块，overlay 仅负责点击交互，不加背景色
-          if (!annotation.hasAppearance) {
-            if (annotation.color) {
-              const c = annotation.color
-              div.style.backgroundColor = `rgba(${c[0] || c['0']}, ${c[1] || c['1']}, ${c[2] || c['2']}, 0.3)`
-            } else {
-              div.style.backgroundColor = 'rgba(255, 255, 0, 0.25)'
-            }
+          div.className += ' ' + CSS.ITEM_SHAPE;
+          if (!annotation.hasAppearance && annotation.color) {
+            const c = annotation.color;
+            div.style.backgroundColor = `rgba(${c[0] || c['0']}, ${c[1] || c['1']}, ${c[2] || c['2']}, 0.3)`;
           }
-          if (annotation.subtype === 'Circle') {
-            div.style.borderRadius = '50%'
-          }
+          if (annotation.subtype === 'Circle') div.style.borderRadius = '50%';
           if (annotation.contents) {
-            div.style.cursor = 'pointer'
-            const label = this.createAnnotationLabel(annotation, rect, viewport.width, replies)
-            label.style.display = 'none'
-            div.appendChild(label)
-            this.bindAnnotationInteraction(div, label)
+            const label = this.createAnnotationLabel(annotation, rect, viewport.width, replies);
+            label.style.display = 'none';
+            div.appendChild(label);
+            this.bindAnnotationInteraction(div, label);
           }
-          break
+          break;
 
         default:
-          // Popup, Stamp, Line, Square, Circle, Ink, Caret, Widget 等不展示
           return null;
       }
-
       return div;
     },
 
-    // 归一化 annotationIcon：处理 Module 对象或纯字符串
     resolveAnnotationIcon() {
       const raw = this.annotationIcon;
       if (!raw) return '';
       if (typeof raw === 'string') return raw;
-      // webpack 5 file-loader 的 esModule 模式：{ default: 'url' }
       if (raw && typeof raw === 'object' && raw.default) return raw.default;
       return String(raw);
     },
 
-    // 为批注添加可见文本标签
-    // 绑定批注交互：click 模式点击切换，hover 模式悬浮展示
     bindAnnotationInteraction(triggerEl, labelEl) {
       if (this.annotationMode === 'hover') {
-        triggerEl.addEventListener('mouseenter', () => { labelEl.style.display = '' })
-        triggerEl.addEventListener('mouseleave', () => { labelEl.style.display = 'none' })
-        labelEl.addEventListener('mouseenter', () => { labelEl.style.display = '' })
-        labelEl.addEventListener('mouseleave', () => { labelEl.style.display = 'none' })
+        triggerEl.addEventListener('mouseenter', () => { labelEl.style.display = ''; });
+        triggerEl.addEventListener('mouseleave', () => { labelEl.style.display = 'none'; });
+        labelEl.addEventListener('mouseenter', () => { labelEl.style.display = ''; });
+        labelEl.addEventListener('mouseleave', () => { labelEl.style.display = 'none'; });
       } else {
         triggerEl.addEventListener('click', (e) => {
-          e.stopPropagation()
-          labelEl.style.display = labelEl.style.display === 'none' ? '' : 'none'
-        })
+          e.stopPropagation();
+          labelEl.style.display = labelEl.style.display === 'none' ? '' : 'none';
+        });
       }
-      // 点击标签本身始终关闭
       labelEl.addEventListener('click', (e) => {
-        e.stopPropagation()
-        labelEl.style.display = 'none'
-      })
+        e.stopPropagation();
+        labelEl.style.display = 'none';
+      });
     },
 
-    // 创建批注文本卡片（返回 DOM 元素，由调用方决定显隐和挂载）
-    createAnnotationLabel(annotation, rect, pageWidth, replies = []) {
+    createAnnotationLabel(annotation, rect, pageWidth, replies) {
       const author = annotation.title || '';
       const dateStr = this.formatAnnotationDate(annotation.date || annotation.modificationDate);
       const content = annotation.contents || '';
 
       const card = document.createElement('div');
-      card.className = 'annotation-label';
-      const cardApproxWidth = 380;
+      card.className = CSS.LABEL;
       const isWide = rect.width > 200;
-      const isNearRightEdge = !isWide && pageWidth && (rect.left + rect.width + cardApproxWidth > pageWidth);
+      const isNearRightEdge = !isWide && pageWidth && (rect.left + rect.width + 380 > pageWidth);
+      let arrowSide = 'left';
 
-      // 定位策略：
-      // - 宽标注(>200px)：右下角，箭头在上方向下指
-      // - 窄标注靠近右边缘：左侧，箭头右边指向左
-      // - 窄标注默认：右侧，箭头左边指向右
-      let arrowSide = 'left'; // left | right | top
-      card.style.position = 'absolute';
       if (isWide) {
         card.style.left = 'auto';
         card.style.right = '0px';
@@ -379,143 +294,79 @@ export default {
       } else {
         card.style.left = (rect.width + 8) + 'px';
         card.style.top = '0px';
-        arrowSide = 'left';
       }
-      card.style.width = 'fit-content';
-      card.style.maxWidth = '770px';
-      card.style.minWidth = '400px';
-      card.style.zIndex = '2';
-      card.style.pointerEvents = 'auto';
-      card.style.fontFamily = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-      card.style.borderRadius = '10px';
-      card.style.textAlign = 'left';
-      card.style.boxShadow = '0 2px 12px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.06)';
-      card.style.overflow = 'hidden';
-      card.style.fontSize = '23px';
 
-      // 头部：作者 + 时间
+      // 头部
       if (author || dateStr) {
         const header = document.createElement('div');
-        header.style.display = 'flex';
-        header.style.alignItems = 'baseline';
-        header.style.justifyContent = 'space-between';
-        header.style.flexWrap = 'wrap';
-        header.style.gap = '4px 16px';
-        header.style.padding = '22px 26px';
-        header.style.background = '#f8f6e9';
-        header.style.borderBottom = '1px solid #e8e0c0';
-
+        header.className = CSS.LABEL_HDR;
         if (author) {
-          const authorEl = document.createElement('span');
-          authorEl.style.fontWeight = '600';
-          authorEl.style.color = '#5c4a1f';
-          authorEl.style.fontSize = '22px';
-          authorEl.style.wordBreak = 'break-word';
-          authorEl.textContent = author;
-          header.appendChild(authorEl);
+          const el = document.createElement('span');
+          el.className = CSS.LABEL_AUTHOR;
+          el.textContent = author;
+          header.appendChild(el);
         }
-
         if (dateStr) {
-          const dateEl = document.createElement('span');
-          dateEl.style.color = '#999';
-          dateEl.style.fontSize = '20px';
-          dateEl.style.whiteSpace = 'nowrap';
-          dateEl.textContent = dateStr;
-          header.appendChild(dateEl);
+          const el = document.createElement('span');
+          el.className = CSS.LABEL_DATE;
+          el.textContent = dateStr;
+          header.appendChild(el);
         }
-
         card.appendChild(header);
       }
 
       // 正文
       if (content) {
         const body = document.createElement('div');
-        body.style.padding = '24px 26px';
-        body.style.lineHeight = '1.9';
-        body.style.color = '#333';
-        body.style.whiteSpace = 'pre-wrap';
-        body.style.wordBreak = 'break-word';
-        body.style.background = '#fffef9';
-        body.style.fontSize = '23px';
+        body.className = CSS.LABEL_BODY;
         body.textContent = content;
         card.appendChild(body);
       }
 
-      // 回复内容
-      if (replies.length > 0) {
-        replies.forEach(reply => {
-          const replySection = document.createElement('div')
-          replySection.style.borderTop = '1px solid #eee'
-          replySection.style.marginTop = '1px solid #eee'
+      // 回复
+      replies.forEach(reply => {
+        const section = document.createElement('div');
+        section.className = CSS.REPLY;
 
-          // 回复头部：作者 + 日期
-          const replyHeader = document.createElement('div')
-          replyHeader.style.display = 'flex'
-          replyHeader.style.alignItems = 'baseline'
-          replyHeader.style.justifyContent = 'space-between'
-          replyHeader.style.gap = '8px'
-          replyHeader.style.padding = '20px 26px 10px 26px'
-          replyHeader.style.background = '#fafaf5'
+        const replyHeader = document.createElement('div');
+        replyHeader.className = CSS.REPLY_HDR;
+        const authorEl = document.createElement('span');
+        authorEl.className = CSS.REPLY_AUTHOR;
+        authorEl.textContent = (reply.title || '未知') + ' 回复';
+        replyHeader.appendChild(authorEl);
+        const replyDate = this.formatAnnotationDate(reply.date || reply.modificationDate);
+        if (replyDate) {
+          const dateEl = document.createElement('span');
+          dateEl.className = CSS.REPLY_DATE;
+          dateEl.textContent = replyDate;
+          replyHeader.appendChild(dateEl);
+        }
+        section.appendChild(replyHeader);
 
-          const replyAuthor = document.createElement('span')
-          replyAuthor.style.fontWeight = '600'
-          replyAuthor.style.fontSize = '18px'
-          replyAuthor.style.color = '#8a6d3b'
-          replyAuthor.textContent = (reply.title || '未知') + ' 回复'
-          replyHeader.appendChild(replyAuthor)
+        const replyBody = document.createElement('div');
+        replyBody.className = CSS.REPLY_BODY;
+        replyBody.textContent = reply.contents;
+        section.appendChild(replyBody);
+        card.appendChild(section);
+      });
 
-          const replyDate = this.formatAnnotationDate(reply.date || reply.modificationDate)
-          if (replyDate) {
-            const dateEl = document.createElement('span')
-            dateEl.style.color = '#999'
-            dateEl.style.fontSize = '16px'
-            dateEl.style.whiteSpace = 'nowrap'
-            dateEl.textContent = replyDate
-            replyHeader.appendChild(dateEl)
-          }
-          replySection.appendChild(replyHeader)
-
-          // 回复正文
-          const replyBody = document.createElement('div')
-          replyBody.style.padding = '10px 26px'
-          replyBody.style.fontSize = '21px'
-          replyBody.style.color = '#555'
-          replyBody.style.whiteSpace = 'pre-wrap'
-          replyBody.style.wordBreak = 'break-word'
-          replyBody.style.lineHeight = '1.7'
-          replyBody.style.background = '#fafaf5'
-          replyBody.textContent = reply.contents
-          replySection.appendChild(replyBody)
-
-          card.appendChild(replySection)
-        })
-      }
-
-      // 小三角箭头，指向批注标记
+      // 箭头
       const arrow = document.createElement('div');
-      arrow.style.position = 'absolute';
-      arrow.style.width = '0';
-      arrow.style.height = '0';
+      arrow.className = CSS.ARROW;
       if (arrowSide === 'top') {
-        // 箭头在上方，向下指向标注
         arrow.style.top = '-6px';
         arrow.style.right = '12px';
-        arrow.style.borderLeft = '6px solid transparent';
-        arrow.style.borderRight = '6px solid transparent';
+        arrow.style.borderRight = arrow.style.borderLeft = '6px solid transparent';
         arrow.style.borderBottom = '6px solid #f8f6e9';
       } else if (arrowSide === 'right') {
-        // 箭头在右侧，指向左边
         arrow.style.top = '10px';
         arrow.style.right = '-6px';
-        arrow.style.borderTop = '6px solid transparent';
-        arrow.style.borderBottom = '6px solid transparent';
+        arrow.style.borderTop = arrow.style.borderBottom = '6px solid transparent';
         arrow.style.borderLeft = '6px solid #f8f6e9';
       } else {
-        // 箭头在左侧，指向右边
         arrow.style.top = '10px';
         arrow.style.left = '-6px';
-        arrow.style.borderTop = '6px solid transparent';
-        arrow.style.borderBottom = '6px solid transparent';
+        arrow.style.borderTop = arrow.style.borderBottom = '6px solid transparent';
         arrow.style.borderRight = '6px solid #f8f6e9';
       }
       card.appendChild(arrow);
@@ -523,102 +374,176 @@ export default {
       return card;
     },
 
-    // 格式化 PDF 批注日期
     formatAnnotationDate(raw) {
       if (!raw) return '';
       try {
-        // PDF 日期格式: "D:20230515120000+08'00'" 或类似
-        const match = raw.match(/D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
-        if (match) {
-          const [, y, m, d, h, mi, s] = match;
-          return `${y}-${m}-${d} ${h}:${mi}`;
-        }
-        // 尝试直接解析 ISO
+        const m = raw.match(/D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+        if (m) return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
         const d = new Date(raw);
-        if (!isNaN(d.getTime())) {
-          return d.toLocaleString('zh-CN', {
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit'
-          });
-        }
+        if (!isNaN(d.getTime())) return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
       } catch (e) { /* ignore */ }
       return '';
     },
 
-    // ---------- 翻页控制 ----------
-    prevPage() {
-      if (this.currentPage <= 1) return;
-      this.currentPage--;
-      this.queueRenderPage(this.currentPage);
-    },
-    nextPage() {
-      if (this.currentPage >= this.totalPages) return;
-      this.currentPage++;
-      this.queueRenderPage(this.currentPage);
-    },
-
+    prevPage() { if (this.currentPage > 1) { this.currentPage--; this.queueRenderPage(this.currentPage); } },
+    nextPage() { if (this.currentPage < this.totalPages) { this.currentPage++; this.queueRenderPage(this.currentPage); } },
     queueRenderPage(num) {
-      if (this.pageRendering) {
-        this.pageNumPending = num;
-      } else {
-        this.renderPage(num);
-      }
+      if (this.pageRendering) { this.pageNumPending = num; } else { this.renderPage(num); }
     }
   },
-
-  mounted() {
-    this.loadPdf(this.pdfUrl);
-  }
+  mounted() { this.loadPdf(this.pdfUrl); }
 };
 </script>
 
-<style scoped>
-.pdf-container {
-  border: 1px solid #ccc;
-  display: block;
-  width: 100%;
+<!-- 非 scoped: 动态 DOM 元素匹配 -->
+<style>
+/* ===== 批注标签卡片 ===== */
+.v2pv-label {
+  position: absolute;
+  width: fit-content;
+  max-width: 770px;
+  min-width: 400px;
+  z-index: 2;
+  pointer-events: auto;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  border-radius: 10px;
+  text-align: left;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.06);
+  overflow: hidden;
+  font-size: 23px;
 }
-
-.pdf-toolbar {
+.v2pv-label-hdr {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px;
-  background: #f0f0f0;
-  border-bottom: 1px solid #ccc;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 22px 26px;
+  background: #f8f6e9;
+  border-bottom: 1px solid #e8e0c0;
+}
+.v2pv-label-author {
+  font-weight: 600;
+  color: #5c4a1f;
+  font-size: 22px;
+  word-break: break-word;
+}
+.v2pv-label-date {
+  color: #999;
+  font-size: 20px;
+  white-space: nowrap;
+}
+.v2pv-label-body {
+  padding: 24px 26px;
+  line-height: 1.9;
+  color: #333;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #fffef9;
+  font-size: 23px;
 }
 
-.pdf-toolbar button {
-  padding: 4px 12px;
+/* ===== 回复区域 ===== */
+.v2pv-reply {
+  border-top: 1px solid #eee;
+}
+.v2pv-reply-hdr {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 20px 26px 10px 26px;
+  background: #fafaf5;
+}
+.v2pv-reply-author {
+  font-weight: 600;
+  font-size: 18px;
+  color: #8a6d3b;
+}
+.v2pv-reply-date {
+  color: #999;
+  font-size: 16px;
+  white-space: nowrap;
+}
+.v2pv-reply-body {
+  padding: 10px 26px;
+  font-size: 21px;
+  color: #555;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  background: #fafaf5;
+}
+
+/* ===== 箭头 ===== */
+.v2pv-arrow {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+/* ===== 批注标记项 ===== */
+.v2pv-item {
+  position: absolute;
+  pointer-events: auto;
+}
+.v2pv-item-link {
+  cursor: pointer;
+  background: rgba(0, 0, 255, 0.1);
+}
+.v2pv-item-highlight {
+  background: rgba(255, 255, 0, 0.4);
+}
+.v2pv-item-underline {
+  border-bottom: 2px solid red;
+}
+.v2pv-item-strikeout {
+  text-decoration: line-through;
+  text-decoration-color: red;
+}
+.v2pv-item-text {
+  cursor: pointer;
+}
+.v2pv-item-shape {
   cursor: pointer;
 }
 
-.pdf-toolbar button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
+/* ===== 图标 ===== */
+.v2pv-icon {
+  display: inline-block;
+  width: 59px;
+  height: 59px;
+  flex-shrink: 0;
+  cursor: pointer;
 }
-
-.pdf-page-wrapper {
-  position: relative;
-  line-height: 0;
-}
-
-canvas {
+.v2pv-icon-img {
+  width: 100%;
+  height: 100%;
   display: block;
 }
 
-.annotation-layer {
-  position: absolute;
-  top: 0;
-  left: 0;
+/* ===== FreeText ===== */
+.v2pv-freetext {
   overflow: hidden;
+  padding: 2px 4px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: #333;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
+.v2pv-freetext-box {
+  border: 1px solid #999;
+  background: #fff;
+}
+</style>
 
-.annotation-layer .annotation-link,
-.annotation-layer .annotation-text,
-.annotation-layer .annotation-shape {
-  pointer-events: auto;
-}
+<style scoped>
+.pdf-container { border: 1px solid #ccc; display: block; width: 100%; }
+.pdf-toolbar { display: flex; align-items: center; gap: 10px; padding: 8px; background: #f0f0f0; border-bottom: 1px solid #ccc; }
+.pdf-toolbar button { padding: 4px 12px; cursor: pointer; }
+.pdf-toolbar button:disabled { cursor: not-allowed; opacity: 0.5; }
+.pdf-page-wrapper { position: relative; line-height: 0; }
+canvas { display: block; }
+.annotation-layer { position: absolute; top: 0; left: 0; overflow: hidden; }
 </style>
